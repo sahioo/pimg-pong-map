@@ -1,0 +1,350 @@
+// This is your Prisma schema file,
+// learn more about it in the docs: https://pris.ly/d/prisma-schema
+
+// Looking for ways to speed up your queries, or scale easily with your serverless or edge functions?
+// Try Prisma Accelerate: https://pris.ly/cli/accelerate-init
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+model User {
+  id        String   @id @default(uuid())
+  name      String
+  email     String   @unique
+  phone     String   @unique
+  passwordHash String
+  rating    Int      @default(500)
+  seasonRating  Int      @default(500)  // current season rating
+  tier         Tier @default(BRONZE)
+  coins     Int      @default(0)
+  role      Role     @default(PLAYER)
+  createdAt DateTime @default(now())
+
+  tournaments   TournamentParticipant[]
+  matches1      Match[]                 @relation("MatchPlayer1")
+  matches2      Match[]                 @relation("MatchPlayer2")
+  refereeAssignments MatchRefereeAssignment[]
+  ratingHistory RatingHistory[]
+  teamMembers   TeamMember[]
+  @@index([rating])
+}
+
+enum Role {
+  ADMIN
+  ORGANIZER
+  PLAYER
+}
+
+model Tournament {
+  id        String           @id @default(uuid())
+  name      String
+  location  String
+  status    TournamentStatus
+  startDate DateTime
+  createdAt DateTime         @default(now())
+
+  // 大会要項（② step）
+  mapUrl           String?
+  openAt           DateTime?
+  entryDeadlineAt  DateTime?
+  cancelPolicy     String?
+  organizer        String?
+  sponsor          String?
+  description      String?
+
+  categories   Category[]
+  participants TournamentParticipant[]
+  matches      Match[]
+}
+
+enum TournamentStatus {
+  DRAFT
+  PUBLISHED
+  REGISTRATION_OPEN
+  REGISTRATION_CLOSED
+  CHECKIN
+  STARTED
+  FINISHED
+  ARCHIVED
+}
+
+model Category {
+  id           String            @id @default(uuid())
+  tournamentId String
+  type         CategoryType
+  format       CompetitionFormat
+  roundCount   Int               @default(3)
+  currentRound Int               @default(0)
+
+  isLocked Boolean @default(false)
+
+  // 種目詳細（③ step）
+  gender                 CategoryGender?
+  teamMatchStructure     Json?   // 団体時の試合構成 [{order, type: "SINGLES"|"DOUBLES"}]
+  leagueMode             LeagueMode?
+  fullLeaguePlayerCount  Int?    // 3〜7（フル時）
+  selectLeagueMatchCount Int?    // 3〜10（セレクト時）
+  capacity               Int?
+  minEntries             Int?
+  courtRange             String?
+  ageRestriction         Json?
+  ratingRestriction      Json?
+  refereeRequired        Boolean @default(false)
+  entryFeeCard           Int?
+  entryFeeCash           Int?
+
+  tournament Tournament @relation(fields: [tournamentId], references: [id])
+  matches    Match[]    @relation("CategoryMatches")
+  teams      Team[]
+  teamMatches TeamMatch[]
+}
+
+enum CategoryGender {
+  MALE    // 男子
+  FEMALE  // 女子
+  MIXED   // 混成
+  MIX     // ミックス
+}
+
+enum CategoryType {
+  SINGLES
+  DOUBLES
+  TEAM
+}
+
+enum LeagueMode {
+  FULL    // フルリーグ（3〜7人・全対戦）
+  SELECT  // セレクトリーグ（3〜10試合）
+}
+
+enum CompetitionFormat {
+  ROUND_ROBIN   // リーグ戦
+  SELECT_ROUND  // リーグ戦（セレクト）
+  TOURNAMENT    // トーナメント戦
+  GROUP_TO_TOURNAMENT  // 予選リーグ→決勝トーナメント
+}
+
+
+enum ResultStatus {
+  NONE // no submissions
+  PENDING
+  SUBMITTED
+  IN_PROGRESS // submissions exist, not yet agreed
+  LOCKED // match result locked (cannot edit)
+}
+
+model Match {
+  id           String      @id @default(uuid())
+  tournamentId String
+  categoryId   String
+  player1Id    String
+  player2Id    String?
+  winnerId     String?
+  status       MatchStatus
+
+  // NEW:
+  version      Int          @default(0)
+  resultStatus ResultStatus @default(NONE)
+
+  // Store canonical scores once agreed/locked
+  // JSON structure example: [{game:1, p1:11, p2:8}, ...]
+  scoreJson   Json?
+  roundNumber Int?
+  submissions MatchScoreSubmission[]
+  createdAt   DateTime               @default(now())
+  updatedAt   DateTime               @updatedAt
+
+  tournament    Tournament @relation(fields: [tournamentId], references: [id])
+  category      Category   @relation("CategoryMatches", fields: [categoryId], references: [id])
+  ratingApplied Boolean    @default(false)
+
+  player1       User            @relation("MatchPlayer1", fields: [player1Id], references: [id])
+  player2       User?           @relation("MatchPlayer2", fields: [player2Id], references: [id])
+  referees      MatchRefereeAssignment[]
+  ratingHistory RatingHistory[]
+  @@index([categoryId, roundNumber])
+  @@index([tournamentId])
+}
+
+model MatchRefereeAssignment {
+  id        String   @id @default(uuid())
+  matchId   String
+  userId    String
+  createdAt DateTime @default(now())
+
+  match Match @relation(fields: [matchId], references: [id], onDelete: Cascade)
+  user  User  @relation(fields: [userId], references: [id])
+
+  @@unique([matchId]) // 1 referee per match (MVP)
+  @@index([userId])
+}
+
+enum MatchStatus {
+  SCHEDULED
+  IN_PROGRESS
+  FINISHED
+  FORFEIT
+}
+
+enum JoinStatus {
+  APPLIED
+  PAID // 支払い完了（大会ページ閲覧可の前提）
+  CANCELED // キャンセル
+  FORFEITED // 棄権（チェックインしない等）
+}
+
+model TournamentParticipant {
+  id           String     @id @default(uuid())
+  tournamentId String
+  userId       String
+  checkedIn    Boolean    @default(false)
+  joinStatus   JoinStatus @default(APPLIED)
+  joinedAt     DateTime   @default(now())
+  canceledAt   DateTime?
+
+  tournament Tournament @relation(fields: [tournamentId], references: [id])
+  user       User       @relation(fields: [userId], references: [id])
+
+  @@unique([tournamentId, userId])
+}
+
+model MatchScoreSubmission {
+  id              String   @id @default(uuid())
+  matchId         String
+  submittedById   String
+  clientRequestId String // idempotency key per device action
+  scoreJson       Json
+  createdAt       DateTime @default(now())
+
+  match Match @relation(fields: [matchId], references: [id])
+
+  @@unique([matchId, submittedById]) // 1 active submission per user (MVP)
+  @@unique([matchId, clientRequestId]) // idempotency
+}
+
+model RatingHistory {
+  id        String   @id @default(uuid())
+  userId    String
+  matchId   String
+  seasonId  String
+  oldRating Int
+  newRating Int
+  delta     Int
+  createdAt DateTime @default(now())
+
+  user  User  @relation(fields: [userId], references: [id])
+  match Match @relation(fields: [matchId], references: [id])
+  season Season @relation(fields: [seasonId], references: [id])
+  @@index([userId])
+  @@index([matchId])
+  @@index([seasonId])
+  @@index([createdAt])
+}
+
+model Season {
+  id        String   @id @default(uuid())
+  name      String
+  startAt   DateTime
+  endAt     DateTime
+  isActive  Boolean  @default(false)
+  createdAt DateTime @default(now())
+
+  ratingHistories RatingHistory[]
+}
+
+enum Tier {
+  BRONZE
+  SILVER
+  GOLD
+  PLATINUM
+  DIAMOND
+  MASTER
+}
+
+model TierHistory {
+  id        String   @id @default(uuid())
+  userId    String
+  oldTier   Tier
+  newTier   Tier
+  createdAt DateTime @default(now())
+}
+
+// ---- Phase 2: 団体戦 (Team match) ----
+
+model Team {
+  id         String   @id @default(uuid())
+  categoryId String
+  name       String
+  order      Int      @default(0)
+  createdAt  DateTime @default(now())
+
+  category   Category   @relation(fields: [categoryId], references: [id], onDelete: Cascade)
+  members    TeamMember[]
+  matchesAsA TeamMatch[] @relation("TeamA")
+  matchesAsB TeamMatch[] @relation("TeamB")
+
+  @@index([categoryId])
+}
+
+model TeamMember {
+  id     String @id @default(uuid())
+  teamId String
+  userId String
+  order  Int    @default(0)
+
+  team Team @relation(fields: [teamId], references: [id], onDelete: Cascade)
+  user User @relation(fields: [userId], references: [id])
+
+  @@unique([teamId, userId])
+  @@index([teamId])
+  @@index([userId])
+}
+
+model TeamMatch {
+  id           String      @id @default(uuid())
+  categoryId   String
+  teamAId      String
+  teamBId      String
+  roundNumber  Int         @default(1)
+  status       MatchStatus @default(SCHEDULED)
+  winnerTeamId String?     // set when all games are finished
+  createdAt    DateTime    @default(now())
+  updatedAt    DateTime    @updatedAt
+
+  category Category   @relation(fields: [categoryId], references: [id], onDelete: Cascade)
+  teamA    Team       @relation("TeamA", fields: [teamAId], references: [id])
+  teamB    Team       @relation("TeamB", fields: [teamBId], references: [id])
+  games    TeamMatchGame[]
+
+  @@index([categoryId])
+  @@index([teamAId, teamBId])
+}
+
+model TeamMatchGame {
+  id           String       @id @default(uuid())
+  teamMatchId  String
+  slotOrder    Int          // 1, 2, 3... from teamMatchStructure
+  type         String       // SINGLES | DOUBLES
+  player1Id    String?      // singles: team A player
+  player2Id    String?      // singles: team B player
+  player1aId   String?      // doubles: team A
+  player1bId   String?
+  player2aId   String?      // doubles: team B
+  player2bId   String?
+  winnerId     String?      // singles: winner user id
+  winnerSide   Int?         // 1 = team A won, 2 = team B won (doubles)
+  scoreJson   Json?
+  resultStatus ResultStatus @default(NONE)
+  createdAt   DateTime     @default(now())
+  updatedAt   DateTime     @updatedAt
+
+  teamMatch TeamMatch @relation(fields: [teamMatchId], references: [id], onDelete: Cascade)
+
+  @@index([teamMatchId])
+}
